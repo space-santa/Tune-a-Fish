@@ -91,6 +91,14 @@ void TuneAFishProcessor::prepareToPlay (double sampleRate, int)
     history.outputPosition = 0;
 }
 
+void TuneAFishProcessor::reset()
+{
+    // Called by hosts when processing stops (the VST3 wrapper calls it from
+    // setProcessing (false)), so nothing from before the stop comes out after it.
+    corrector.reset();
+    history.outputPosition = 0;
+}
+
 bool TuneAFishProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto& in = layouts.getMainInputChannelSet();
@@ -121,7 +129,7 @@ void TuneAFishProcessor::handleMidi (const juce::MidiMessage& message)
         corrector.allNotesOff();
 }
 
-void TuneAFishProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
+void TuneAFishProcessor::process (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi, bool bypassed)
 {
     juce::ScopedNoDenormals noDenormals;
 
@@ -129,8 +137,16 @@ void TuneAFishProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     const int numChannels = juce::jmin (buffer.getNumChannels(), preparedChannels);
 
     if (numChannels == 0 || numSamples == 0)
-        return;
+    {
+        // No audio, but hosts can still deliver notes this way.
+        for (const auto metadata : midi)
+            handleMidi (metadata.getMessage());
 
+        return;
+    }
+
+    // While bypassed the corrector keeps listening (to notes too), so it picks up seamlessly.
+    corrector.setBypassed (bypassed);
     corrector.setSettings (currentSettings());
 
     // Process the audio between MIDI events, so each note lands on the right sample.

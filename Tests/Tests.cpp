@@ -263,6 +263,70 @@ TEST (retune_speed_sets_how_fast_a_note_is_pulled_in)
     CHECK_NEAR (late.median, 57.0, 0.03);
 }
 
+TEST (retune_speed_is_the_same_for_any_shift)
+{
+    // Sing A3 with no note held, then hold a note some way off. However big the shift, the
+    // correction should get 95% of the way there in the retune time.
+    const auto voice = steadyVowel (sr, 1.5, 220.0);
+    const auto noteStart = (std::int64_t) (0.5 * sr);
+
+    for (int shift : { -12, -5, 5, 12 })
+    {
+        GrainCollector collector;
+        const auto run = correct (voice, sr, midiMode (200.0), { { noteStart, 57 + shift, true } }, 256, &collector);
+        double reached = -1.0;
+
+        for (const auto& g : collector.grains)
+        {
+            const auto centre = g.outputSample - run.latency;
+
+            if (centre >= noteStart && g.inputPitch >= 0.0f && (g.outputPitch - g.inputPitch) / (float) shift >= 0.95f)
+            {
+                reached = (double) (centre - noteStart) / sr;
+                break;
+            }
+        }
+
+        std::printf ("    %+d semitones: 95%% of the way after %.0f ms\n", shift, 1000.0 * reached);
+        CHECK_NEAR (reached, 0.2, 0.015);
+    }
+}
+
+TEST (scale_mode_keeps_its_note_through_a_short_dropout)
+{
+    // Drift from A3 + 30 cents up to A3 + 53 cents. A# is now a little nearer, but the
+    // hysteresis keeps the target on A. A 6 ms dropout in the middle of the note (a
+    // period that doesn't repeat) mustn't make it forget that.
+    auto voice = vowel (sr, 2.0, [] (double t)
+                        { return 220.0 * std::exp2 ((30.0 + 23.0 * std::clamp ((t - 0.5) / 0.3, 0.0, 1.0)) / 1200.0); });
+    std::fill (voice.begin() + (std::ptrdiff_t) (1.2 * sr), voice.begin() + (std::ptrdiff_t) (1.206 * sr), 0.0f);
+
+    GrainCollector collector;
+    const auto run = correct (voice, sr, scaleMode (0, ScaleType::chromatic), {}, 256, &collector);
+    int unvoiced = 0, voiced = 0, offTarget = 0;
+
+    for (const auto& g : collector.grains)
+    {
+        const double t = (double) (g.outputSample - run.latency) / sr;
+
+        if (t < 0.9 || t > 1.9)
+            continue;
+
+        if (g.inputPitch < 0.0f)
+        {
+            ++unvoiced;
+            continue;
+        }
+
+        ++voiced;
+        offTarget += g.targetNote == 57 ? 0 : 1;
+    }
+
+    std::printf ("    %d unvoiced grains, %d of %d voiced grains not aimed at A3\n", unvoiced, offTarget, voiced);
+    CHECK (unvoiced > 0); // the dropout did interrupt the voicing
+    CHECK (offTarget == 0);
+}
+
 //==============================================================================
 TEST (midi_mode_follows_the_held_note)
 {
@@ -289,6 +353,24 @@ TEST (midi_mode_uses_the_last_note_of_several)
     // Releasing the top note falls back to the one still held.
     const auto run2 = correct (voice, sr, midiMode(), { { 0, 60, true }, { 1000, 62, true }, { 2000, 62, false } });
     CHECK_NEAR (pitchStats (run2.output, sr, 0.2, 1.8).median, 60.0, 0.03);
+}
+
+TEST (midi_mode_keeps_a_note_restarted_at_the_same_sample)
+{
+    // Back-to-back C4s, where the new note-on arrives before the old note-off at the same
+    // sample. C4 is still held afterwards.
+    const auto voice = steadyVowel (sr, 2.0, 225.0);
+    const auto restart = (std::int64_t) (1.0 * sr);
+    const auto run = correct (voice, sr, midiMode(), { { 0, 60, true }, { restart, 60, true }, { restart, 60, false } });
+    CHECK_NEAR (pitchStats (run.output, sr, 1.2, 1.8).median, 60.0, 0.03);
+
+    // Overlapping notes of the same pitch: held until the last one ends.
+    const auto run2 = correct (voice, sr, midiMode(), { { 0, 60, true }, { 1000, 60, true }, { 2000, 60, false } });
+    CHECK_NEAR (pitchStats (run2.output, sr, 0.2, 1.8).median, 60.0, 0.03);
+
+    // A note that starts and ends at the same sample leaves nothing held.
+    const auto run3 = correct (voice, sr, midiMode(), { { 1000, 60, true }, { 1000, 60, false } });
+    CHECK_NEAR (pitchStats (run3.output, sr, 0.2, 1.8).median, frequencyToPitch (225.0), 0.02);
 }
 
 TEST (midi_mode_without_notes_leaves_pitch_alone)
@@ -374,11 +456,7 @@ TEST (notes_ending_abruptly_give_no_wild_pitches)
         signal.insert (signal.end(), hiss.begin(), hiss.end());
     }
 
-    struct Collector : PitchCorrector::Listener
-    {
-        std::vector<PitchCorrector::GrainInfo> grains;
-        void grainProduced (const PitchCorrector::GrainInfo& g) override { grains.push_back (g); }
-    } collector;
+    GrainCollector collector;
 
     PitchCorrector corrector;
     corrector.prepare (sr, 1);
@@ -480,13 +558,71 @@ TEST (stereo_channels_get_the_same_correction)
     CHECK (maxDifference < 1.0e-5);
 }
 
+TEST (bypass_passes_the_input_through_in_line_with_the_latency)
+{
+    const auto voice = steadyVowel (sr, 2.0, 225.0);
+    std::vector<float> out (voice.size());
+
+    PitchCorrector corrector;
+    corrector.prepare (sr, 1);
+    corrector.setSettings (scaleMode (0, ScaleType::chromatic));
+    const int latency = corrector.getLatencySamples();
+
+    const auto process = [&] (size_t from, size_t to)
+    {
+        const float* in[] { voice.data() + from };
+        float* o[] { out.data() + from };
+        corrector.process (in, o, 1, (int) (to - from));
+    };
+
+    // Bypassed for the first second: exactly the input, `latency` samples later.
+    const auto switchAt = (size_t) sr;
+    corrector.setBypassed (true);
+    process (0, switchAt);
+
+    double maxError = 0.0;
+
+    for (size_t i = (size_t) latency; i < switchAt; ++i)
+        maxError = std::max (maxError, (double) std::abs (out[i] - voice[i - (size_t) latency]));
+
+    CHECK (maxError == 0.0);
+
+    // Back on: corrected straight away. The corrector kept listening while bypassed, so
+    // nothing stale from before the bypass comes out.
+    corrector.setBypassed (false);
+    process (switchAt, voice.size());
+
+    const std::vector<float> aligned (out.begin() + latency, out.end());
+    const double resumed = (double) (switchAt - (size_t) latency) / sr;
+    const auto after = pitchStats (aligned, sr, resumed + 0.03, resumed + 0.6);
+    std::printf ("    after the bypass: %.3f (target 57), voiced %.2f\n", after.median, after.voicedFraction);
+    CHECK_NEAR (after.median, 57.0, 0.03);
+    CHECK (after.voicedFraction > 0.95);
+    CHECK (corrector.getLookaheadShortfalls() == 0);
+}
+
+TEST (settings_can_be_applied_before_prepare)
+{
+    // 84 Hz is E2 + 33 cents, below the default voice's range: only the low voice finds it.
+    auto settings = scaleMode (0, ScaleType::chromatic);
+    settings.voice = VoiceType::low;
+
+    PitchCorrector corrector;
+    corrector.setSettings (settings);
+    corrector.prepare (sr, 1);
+
+    auto voice = steadyVowel (sr, 1.5, 84.0);
+    voice.resize (voice.size() + (size_t) corrector.getLatencySamples(), 0.0f);
+    float* channels[] { voice.data() };
+    corrector.process (channels, channels, 1, (int) voice.size());
+
+    const std::vector<float> out (voice.begin() + corrector.getLatencySamples(), voice.end());
+    CHECK_NEAR (pitchStats (out, sr, 0.3, 1.3).median, 40.0, 0.03);
+}
+
 TEST (reports_grains_for_the_display)
 {
-    struct Collector : PitchCorrector::Listener
-    {
-        std::vector<PitchCorrector::GrainInfo> grains;
-        void grainProduced (const PitchCorrector::GrainInfo& g) override { grains.push_back (g); }
-    } collector;
+    GrainCollector collector;
 
     PitchCorrector corrector;
     corrector.prepare (sr, 1);

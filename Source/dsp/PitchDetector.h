@@ -28,7 +28,8 @@ public:
     /** lowestHz is the lowest pitch any range will ask for. It sets the buffer sizes. */
     void prepare (double sampleRate, double lowestHz);
 
-    /** The pitch range to search. Narrower ranges make octave mistakes less likely. */
+    /** The pitch range to search. Narrower ranges make octave mistakes less likely.
+        prepare() sets a default range, and calls before prepare() are ignored. */
     void setRange (double minHz, double maxHz);
 
     void reset();

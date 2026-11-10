@@ -178,13 +178,22 @@ struct Run
     int latency = 0;
 };
 
-/** Runs a mono signal through the corrector, in blocks, with optional MIDI. */
+struct GrainCollector final : tuneafish::PitchCorrector::Listener
+{
+    std::vector<tuneafish::PitchCorrector::GrainInfo> grains;
+    void grainProduced (const tuneafish::PitchCorrector::GrainInfo& g) override { grains.push_back (g); }
+};
+
+/** Runs a mono signal through the corrector, in blocks, with optional MIDI. Notes at the
+    same sample are sent in the order given. */
 inline Run correct (const std::vector<float>& input, double sampleRate, const tuneafish::CorrectorSettings& settings,
-                    std::vector<NoteEvent> notes = {}, int blockSize = 256)
+                    std::vector<NoteEvent> notes = {}, int blockSize = 256,
+                    tuneafish::PitchCorrector::Listener* listener = nullptr)
 {
     tuneafish::PitchCorrector corrector;
     corrector.prepare (sampleRate, 1);
     corrector.setSettings (settings);
+    corrector.setListener (listener);
 
     Run run;
     run.latency = corrector.getLatencySamples();
@@ -193,7 +202,7 @@ inline Run correct (const std::vector<float>& input, double sampleRate, const tu
     padded.resize (input.size() + (size_t) run.latency, 0.0f);
     std::vector<float> out (padded.size(), 0.0f);
 
-    std::sort (notes.begin(), notes.end(), [] (auto& a, auto& b) { return a.sample < b.sample; });
+    std::stable_sort (notes.begin(), notes.end(), [] (auto& a, auto& b) { return a.sample < b.sample; });
     size_t nextNote = 0;
     std::int64_t position = 0;
     const auto total = (std::int64_t) padded.size();

@@ -116,9 +116,11 @@ std::optional<std::vector<NoteEvent>> readMidiFile (const juce::File& file, doub
         }
     }
 
-    // At the same instant, release notes before starting new ones.
+    // In time order, keeping the file's order at the same instant. The corrector counts
+    // note-ons against note-offs, so a note that ends and restarts at once stays held
+    // whichever comes first.
     std::stable_sort (events.begin(), events.end(), [] (const NoteEvent& a, const NoteEvent& b)
-                      { return a.sample != b.sample ? a.sample < b.sample : (! a.on && b.on); });
+                      { return a.sample < b.sample; });
     return events;
 }
 
@@ -136,11 +138,13 @@ void printPitch (const std::vector<PitchCorrector::GrainInfo>& grains, int laten
     const auto step = (std::int64_t) (0.01 * sampleRate);
     size_t g = 0;
 
+    // The last grain centred at or before the current moment (grain times include the
+    // latency). Low voices and downward shifts space grains further apart than the 10 ms
+    // step, so it carries over from one step to the next.
+    const PitchCorrector::GrainInfo* latest = nullptr;
+
     for (std::int64_t time = 0; time < length; time += step)
     {
-        // The last grain centred at or before this moment (grain times include the latency).
-        const PitchCorrector::GrainInfo* latest = nullptr;
-
         while (g < grains.size() && grains[g].outputSample - latency <= time)
             latest = &grains[g++];
 

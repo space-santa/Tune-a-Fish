@@ -23,6 +23,13 @@ constexpr double spacingAllowance = 1.125;
 // In scale mode, stay on the current note until another is this much closer (semitones).
 constexpr double hysteresis = 0.1;
 
+// The scale-mode note is forgotten (along with its hysteresis) only after this long
+// unvoiced, so a breathy or rough period in the middle of a note doesn't reset it.
+constexpr double scaleNoteMemorySeconds = 0.1;
+
+// Crossfade time when the bypass is switched.
+constexpr double bypassFadeSeconds = 0.01;
+
 // A period counts as voiced only if it correlates with the one before at least this well.
 constexpr double minPeriodicity = 0.5;
 
@@ -58,6 +65,7 @@ void PitchCorrector::prepare (double newSampleRate, int numChannels)
     maxDetectPeriod = (int) std::ceil (sampleRate / lowestHz);
     maxSpacing = (int) std::ceil (maxDetectPeriod * spacingAllowance);
     unvoicedSpacing = std::max (1, (int) std::lround (sampleRate * unvoicedSpacingSeconds));
+    bypassStep = 1.0 / std::max (1.0, sampleRate * bypassFadeSeconds);
 
     // When a grain is added (at most maxSpacing before its centre), we need the marks up to
     // half a spacing past its centre, and the input up to a full spacing past its mark.
@@ -110,8 +118,11 @@ void PitchCorrector::reset()
 
     correction = 0.0;
     scaleNote = -1;
+    unvoicedSeconds = 0.0;
     noteEventsRead = noteEventsWritten = 0;
     numHeld = 0;
+    heldCount.fill (0);
+    bypassMix = bypassed ? 1.0 : 0.0;
     lookaheadShortfalls = 0;
 }
 
@@ -156,17 +167,36 @@ void PitchCorrector::applyNoteEventsUpTo (std::int64_t time)
         if (event.type == NoteEvent::allOff)
         {
             numHeld = 0;
+            heldCount.fill (0);
             continue;
         }
 
-        // Remove the note if it's already held, then (for note-ons) put it on top.
-        const auto end = held.begin() + numHeld;
-        numHeld = (int) (std::remove (held.begin(), end, event.note) - held.begin());
+        if (event.note < 0 || event.note >= (int) heldCount.size())
+            continue;
+
+        // Count note-ons against note-offs, so a note that's restarted stays held whichever
+        // order its old note-off and new note-on arrive in.
+        auto& count = heldCount[(size_t) event.note];
+
+        if (event.type == NoteEvent::off)
+        {
+            if (count == 0 || --count > 0)
+                continue;
+        }
+        else if (count < 255)
+        {
+            ++count;
+        }
+
+        // Remove the note from the list, then (for note-ons) put it back on top.
+        numHeld = (int) (std::remove (held.begin(), held.begin() + numHeld, event.note) - held.begin());
 
         if (event.type == NoteEvent::on)
         {
             if (numHeld == (int) held.size())
             {
+                // Full: forget the oldest note completely, including its later note-off.
+                heldCount[(size_t) held[0]] = 0;
                 std::move (held.begin() + 1, held.end(), held.begin());
                 --numHeld;
             }
@@ -224,10 +254,18 @@ void PitchCorrector::process (const float* const* input, float* const* output, i
         }
 
         const auto outSlot = (size_t) (now & outputMask);
+        const auto drySlot = (size_t) (now & inputMask); // the input from `latency` samples ago
+
+        if (bypassed ? bypassMix < 1.0 : bypassMix > 0.0)
+            bypassMix = std::clamp (bypassMix + (bypassed ? bypassStep : -bypassStep), 0.0, 1.0);
+
+        const auto mix = (float) bypassMix;
 
         for (int ch = 0; ch < used; ++ch)
         {
-            output[ch][i] = outputRing[(size_t) ch][outSlot];
+            const float wet = outputRing[(size_t) ch][outSlot];
+            const float dry = inputRing[(size_t) ch][drySlot];
+            output[ch][i] = mix <= 0.0f ? wet : (mix >= 1.0f ? dry : wet + mix * (dry - wet));
             outputRing[(size_t) ch][outSlot] = 0.0f;
         }
 
@@ -405,16 +443,27 @@ std::int64_t PitchCorrector::nearestMark (double position)
 }
 
 //==============================================================================
+double PitchCorrector::retuneAlpha (double seconds) const
+{
+    // How far the correction moves towards its target in this much time. The retune speed
+    // is roughly the time to get 95% of the way there (three time constants). At zero the
+    // correction is immediate, which gives the hard, robotic effect.
+    return settings.retuneMs < 0.5 ? 1.0 : 1.0 - std::exp (-seconds * 3000.0 / settings.retuneMs);
+}
+
 void PitchCorrector::relaxCorrection (double seconds)
 {
-    const double alpha = settings.retuneMs < 0.5 ? 1.0 : 1.0 - std::exp (-seconds * 3000.0 / settings.retuneMs);
-    correction -= alpha * correction;
-    scaleNote = -1;
+    correction -= retuneAlpha (seconds) * correction;
+    unvoicedSeconds += seconds;
+
+    if (unvoicedSeconds >= scaleNoteMemorySeconds)
+        scaleNote = -1;
 }
 
 double PitchCorrector::ratioForVoicedGrain (double inputPitch, double seconds, GrainInfo& info)
 {
     int target = -1;
+    unvoicedSeconds = 0.0;
 
     if (settings.midiMode)
     {
@@ -431,11 +480,7 @@ double PitchCorrector::ratioForVoicedGrain (double inputPitch, double seconds, G
     }
 
     const double wanted = target >= 0 ? std::clamp (target - inputPitch, -maxShiftSemitones, maxShiftSemitones) : 0.0;
-
-    // The retune speed is roughly the time to get 95% of the way to the target (three time
-    // constants). At zero the correction is immediate, which gives the hard, robotic effect.
-    const double alpha = settings.retuneMs < 0.5 ? 1.0 : 1.0 - std::exp (-seconds * 3000.0 / settings.retuneMs);
-    correction += alpha * (wanted - correction);
+    correction += retuneAlpha (seconds) * (wanted - correction);
 
     const double shift = settings.amount * correction;
     info.inputPitch = (float) inputPitch;
@@ -474,15 +519,20 @@ void PitchCorrector::addGrain (std::int64_t now)
     info.outputSample = centre + latency;
     double ratio = 1.0;
 
+    // The correction moves on by the output time since the previous grain. (Grains are a
+    // period apart in the input but a period / ratio apart in the output, so counting input
+    // periods would make the retune time depend on the size of the shift.)
+    const double elapsed = (double) (centre - lastGrainCentre) / sampleRate;
+
     if (mark.voiced)
     {
         // The local period: the distance to a neighbouring voiced mark.
         const double period = hasNext && next.voiced ? forward : (hasPrevious && previous.voiced ? backward : mark.period);
-        ratio = ratioForVoicedGrain (frequencyToPitch (sampleRate / period), forward / sampleRate, info);
+        ratio = ratioForVoicedGrain (frequencyToPitch (sampleRate / period), elapsed, info);
     }
     else
     {
-        relaxCorrection (forward / sampleRate);
+        relaxCorrection (elapsed);
         info.targetNote = settings.midiMode ? currentHeldNote() : -1;
     }
 

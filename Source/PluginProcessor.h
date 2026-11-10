@@ -53,10 +53,15 @@ public:
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
+    void reset() override;
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
 
-    void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override { process (buffer, midi, false); }
     using AudioProcessor::processBlock;
+
+    /** The host's bypass: the dry signal, delayed by the latency like the corrected one. */
+    void processBlockBypassed (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override { process (buffer, midi, true); }
+    using AudioProcessor::processBlockBypassed;
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -87,6 +92,7 @@ private:
     void grainProduced (const tuneafish::PitchCorrector::GrainInfo&) override;
     tuneafish::CorrectorSettings currentSettings() const;
     void handleMidi (const juce::MidiMessage&);
+    void process (juce::AudioBuffer<float>&, juce::MidiBuffer&, bool bypassed);
 
     tuneafish::PitchCorrector corrector;
     int preparedChannels = 0;

@@ -121,8 +121,13 @@ void TuneAFishEditor::timerCallback()
 {
     // Key and scale don't apply in MIDI mode.
     const bool scaleMode = choices[modeChoice].box.getSelectedItemIndex() == 0;
-    choices[keyChoice].box.setEnabled (scaleMode);
-    choices[scaleChoice].box.setEnabled (scaleMode);
+
+    if (choices[keyChoice].box.isEnabled() != scaleMode)
+    {
+        choices[keyChoice].box.setEnabled (scaleMode);
+        choices[scaleChoice].box.setEnabled (scaleMode);
+        repaint (controlsArea); // their labels are drawn by paint(), dimmed to match
+    }
 
     pitchView.update();
     repaint (readoutArea);

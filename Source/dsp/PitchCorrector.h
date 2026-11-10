@@ -72,12 +72,19 @@ public:
 
     int getLatencySamples() const { return latency; }
 
-    /** Safe to call from the audio thread between process() calls. */
+    /** Safe to call from the audio thread between process() calls, and before prepare(). */
     void setSettings (const CorrectorSettings&);
     void setListener (Listener* l) { listener = l; }
 
+    /** While bypassed, the output is the input delayed by the latency, so it stays in line
+        with everything else. Analysis carries on, so the correction picks up seamlessly
+        when the bypass ends. Switching crossfades over a few milliseconds. */
+    void setBypassed (bool shouldBypass) { bypassed = shouldBypass; }
+
     /** MIDI notes take effect at the next input sample, so call these between process()
-        calls at the right sample positions. */
+        calls at the right sample positions. A note stays held until it has had as many
+        note-offs as note-ons, so the order of a note-off and note-on at the same sample
+        doesn't matter. */
     void noteOn (int note);
     void noteOff (int note);
     void allNotesOff();
@@ -115,6 +122,7 @@ private:
     void addGrain (std::int64_t outputTime);
     double ratioForVoicedGrain (double inputPitch, double seconds, GrainInfo&);
     void relaxCorrection (double seconds);
+    double retuneAlpha (double seconds) const;
     void applyNoteEventsUpTo (std::int64_t time);
     int currentHeldNote() const { return numHeld > 0 ? held[(size_t) numHeld - 1] : -1; }
     void queueNoteEvent (NoteEvent);
@@ -151,13 +159,19 @@ private:
     std::vector<float> window;    // scratch space for one grain's window
 
     // Correction state.
-    double correction = 0.0; // semitones, smoothed according to the retune speed
-    int scaleNote = -1;      // current target in scale mode, for hysteresis
+    double correction = 0.0;     // semitones, smoothed according to the retune speed
+    int scaleNote = -1;          // current target in scale mode, for hysteresis
+    double unvoicedSeconds = 0.0; // how long since the last voiced grain
 
     std::array<NoteEvent, 256> noteEvents {};
     size_t noteEventsRead = 0, noteEventsWritten = 0;
-    std::array<int, 16> held {};
+    std::array<int, 16> held {}; // held notes, oldest first
     int numHeld = 0;
+    std::array<std::uint8_t, 128> heldCount {}; // note-ons not yet matched by a note-off, per note
+
+    bool bypassed = false;
+    double bypassMix = 0.0;  // 0 = corrected, 1 = dry; ramps towards `bypassed`
+    double bypassStep = 0.0; // per sample
 
     Listener* listener = nullptr;
     std::int64_t lookaheadShortfalls = 0;

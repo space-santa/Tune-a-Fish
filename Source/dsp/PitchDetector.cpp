@@ -94,6 +94,10 @@ void PitchDetector::prepare (double newSampleRate, double lowestHz)
 
 void PitchDetector::setRange (double minHz, double maxHz)
 {
+    // There's nothing to fit a range into before prepare(), which sets its own.
+    if (maxLagEver < 4)
+        return;
+
     maxLag = std::clamp ((int) std::ceil (detectRate / minHz), 4, maxLagEver);
     minLag = std::clamp ((int) std::floor (detectRate / maxHz), 2, maxLag - 2);
 }
