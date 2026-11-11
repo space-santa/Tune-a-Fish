@@ -21,7 +21,7 @@ jobs:
             extra-args: ""
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DTUNEAFISH_COPY_PLUGIN=OFF ${{ matrix.extra-args }}
@@ -32,7 +32,7 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Tune-a-Fish-${{ runner.os }}
           path: |
