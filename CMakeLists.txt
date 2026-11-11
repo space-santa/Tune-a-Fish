@@ -62,10 +62,9 @@ juce_add_plugin(TuneAFish
     NEEDS_MIDI_INPUT  TRUE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT    FALSE
-    AU_MAIN_TYPE      kAudioUnitType_MusicEffect
     VST3_CATEGORIES   Fx Pitch Shift
 
-    FORMATS VST3 AU
+    FORMATS VST3
     COPY_PLUGIN_AFTER_BUILD ${TUNEAFISH_COPY_PLUGIN})
 
 target_sources(TuneAFish

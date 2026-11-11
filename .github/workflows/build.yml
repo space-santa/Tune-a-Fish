@@ -35,6 +35,4 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: Tune-a-Fish-${{ runner.os }}
-          path: |
-            build/TuneAFish_artefacts/Release/VST3
-            build/TuneAFish_artefacts/Release/AU
+          path: build/TuneAFish_artefacts/Release/VST3

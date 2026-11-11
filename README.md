@@ -24,12 +24,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-The plugin is installed automatically after every build:
-
-| Format | Installed to |
-| --- | --- |
-| VST3 | `~/Library/Audio/Plug-Ins/VST3/Tune-a-Fish.vst3` |
-| AU | `~/Library/Audio/Plug-Ins/Components/Tune-a-Fish.component` |
+The plugin is installed automatically after every build, to `~/Library/Audio/Plug-Ins/VST3/Tune-a-Fish.vst3`.
 
 To build without installing, add `-DTUNEAFISH_COPY_PLUGIN=OFF` to the first command.
 
@@ -44,8 +39,6 @@ ctest --test-dir build --output-on-failure
 ```
 
 ## Using it in Ableton Live
-
-**Use the VST3 version in Live.** The instructions below are for the VST3. MIDI mode needs MIDI routed into the plugin, and the AU version hasn't been tried for that.
 
 ### One-time setup
 
